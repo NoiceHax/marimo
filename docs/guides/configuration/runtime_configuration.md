@@ -98,14 +98,23 @@ By default, marimo will not add any additional directories to the Python path.
 This keeps the behavior of `marimo edit nb.py` and `python nb.py` consistent.
 
 You can add directories to the Python path by setting the `pythonpath` key in
-the runtime configuration. These directories will be added to the head of
+your user configuration. These directories will be added to the head of
 `sys.path`, similar to how the `PYTHONPATH` environment variable works. This
-allows Python to find and import modules from these directories.
+allows Python to find and import modules from these directories. Write absolute
+paths. marimo passes each entry to `sys.path` unchanged, so a relative one is
+interpreted from whatever directory the process happens to be in.
 
-```toml title="pyproject.toml"
-[tool.marimo.runtime]
-pythonpath = ["project/src"]
+```toml title="~/.config/marimo/marimo.toml"
+[runtime]
+pythonpath = ["/path/to/project/src"]
 ```
+
+!!! warning "Read only from your user configuration"
+
+    `pythonpath` decides which module an `import` resolves to, so marimo ignores
+    it in three places that travel with the code: `pyproject.toml`, notebook
+    script metadata, and a `.marimo.toml` inside a project directory. Cloning a
+    repository is not consent to that author choosing what your code imports.
 
 !!! tip "Consider alternatives to path manipulation"
 
@@ -132,11 +141,25 @@ pythonpath = ["project/src"]
 
 marimo supports loading environment variables from `.env` files. This is useful for managing configuration that should not be committed to version control, such as API keys or database credentials.
 
-The `.env` next to your `pyproject.toml` is loaded by default. To configure multiple or a different location, you can specify them in your configuration:
+No `.env` file is loaded unless you name it. List the files you want in your user configuration, using absolute paths:
 
-```toml title="pyproject.toml"
-[tool.marimo.runtime]
-dotenv = [".env", ".env.testing"]
+```toml title="~/.config/marimo/marimo.toml"
+[runtime]
+dotenv = ["/path/to/project/.env", "/path/to/project/.env.testing"]
 ```
 
-Environment variables from your `dotenv` will be surfaced in the UI when creating databases.
+A file that does not exist is silently ignored. Environment variables from your `dotenv` will be surfaced in the UI when creating databases.
+
+!!! warning "Read only from your user configuration"
+
+    Loading a `.env` turns file contents into environment variables before any
+    cell runs. marimo therefore ignores `dotenv` in the same three
+    code-travelling places it ignores `pythonpath`. Otherwise a cloned repository
+    could name a file it also controls, and put values of its choosing into your
+    environment before any cell runs.
+
+!!! note "Changed behavior"
+
+    marimo used to load the `.env` sitting next to a discovered `pyproject.toml`
+    automatically. It no longer does. Name the file in your user configuration to
+    keep that behavior.
