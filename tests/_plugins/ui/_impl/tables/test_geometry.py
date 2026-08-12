@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 import pytest
@@ -15,6 +16,7 @@ from marimo._plugins.ui._impl.tables.geometry import (
 from marimo._plugins.ui._impl.tables.narwhals_table import (
     NarwhalsTableManager,
 )
+from marimo._plugins.ui._impl.tables.utils import get_table_manager
 from tests._plugins.ui._impl.tables import geometry_fixtures as geo
 
 
@@ -114,3 +116,94 @@ class TestNarwhalsGeometryContract:
         assert stats.nulls == 1
         assert stats.unique is None
         assert stats.min is None
+
+
+@pytest.mark.requires("geopandas")
+class TestGeoPandasManager:
+    def test_field_type_uses_geometry_semantics(self) -> None:
+        manager = get_table_manager(geo.gdf_point_known_crs())
+
+        assert manager.get_field_type("geometry") == ("geometry", "geometry")
+
+    def test_transforms_preserve_subclass_and_crs(self) -> None:
+        import geopandas as gpd
+        import narwhals.stable.v2 as nw
+
+        manager = get_table_manager(geo.gdf_point_known_crs())
+        data = manager.data
+        for transformed in (
+            data.filter(nw.col("name") == "a"),
+            data.sort("name"),
+            data.head(1),
+            data.select(["name", "geometry"]),
+        ):
+            native = transformed.to_native()
+            assert isinstance(native, gpd.GeoDataFrame)
+            assert str(native.crs) == "EPSG:4326"
+
+    def test_formatting_preserves_subclass_and_crs(self) -> None:
+        import geopandas as gpd
+
+        manager = get_table_manager(geo.gdf_point_known_crs())
+        formatted = manager.apply_formatting({"name": str.upper})
+        native = formatted.data.to_native()
+
+        assert isinstance(native, gpd.GeoDataFrame)
+        assert str(native.crs) == "EPSG:4326"
+
+    def test_cells_render_capped_wkt(self) -> None:
+        import geopandas as gpd
+        from shapely.geometry import LineString
+
+        geometry = LineString((index, index) for index in range(100))
+        manager = get_table_manager(
+            gpd.GeoDataFrame({"geometry": [geometry]}, geometry="geometry")
+        )
+
+        rows = json.loads(manager.to_json_str())
+        assert rows[0]["geometry"] == (
+            str(geometry)[:GEOMETRY_CELL_CAP] + "..."
+        )
+
+    def test_null_cell_stays_null(self) -> None:
+        manager = get_table_manager(geo.gdf_with_null())
+
+        rows = json.loads(manager.to_json_str())
+        assert rows[1]["geometry"] is None
+
+    def test_unique_values_returns_empty(self) -> None:
+        manager = get_table_manager(geo.gdf_point_known_crs())
+
+        assert manager.get_unique_column_values("geometry") == []
+
+
+class TestManagerTemplateHook:
+    @pytest.mark.requires("polars")
+    def test_polars_uses_semantic_type(self) -> None:
+        import polars as pl
+
+        manager = get_table_manager(
+            pl.DataFrame({"geometry": ["POINT (0 0)"]})
+        )
+        manager.__dict__["_geometry_columns"] = {
+            "geometry": GeometryColumnInfo(
+                encoding="wkt", external_type="geometry"
+            )
+        }
+
+        assert manager.get_field_type("geometry") == ("geometry", "geometry")
+
+    @pytest.mark.requires("ibis")
+    def test_ibis_uses_semantic_type(self) -> None:
+        import ibis
+
+        manager = get_table_manager(
+            ibis.memtable({"geometry": ["POINT (0 0)"]})
+        )
+        manager.__dict__["_geometry_columns"] = {
+            "geometry": GeometryColumnInfo(
+                encoding="wkt", external_type="geometry"
+            )
+        }
+
+        assert manager.get_field_type("geometry") == ("geometry", "geometry")
