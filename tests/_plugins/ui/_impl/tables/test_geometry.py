@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from marimo._plugins.ui._impl.tables.geometry import (
@@ -9,6 +11,9 @@ from marimo._plugins.ui._impl.tables.geometry import (
     GeometryColumnInfo,
     find_geometry_columns,
     format_geometry_cell,
+)
+from marimo._plugins.ui._impl.tables.narwhals_table import (
+    NarwhalsTableManager,
 )
 from tests._plugins.ui._impl.tables import geometry_fixtures as geo
 
@@ -57,3 +62,55 @@ class TestPandasDetection:
         )
 
         assert find_geometry_columns(frame) == {}
+
+
+@pytest.mark.requires("pandas")
+class TestNarwhalsGeometryContract:
+    @staticmethod
+    def _manager() -> NarwhalsTableManager[Any, Any]:
+        import pandas as pd
+
+        manager = NarwhalsTableManager.from_dataframe(
+            pd.DataFrame(
+                {
+                    "name": ["a", "b"],
+                    "geometry": ["POINT (0 0)", None],
+                }
+            )
+        )
+        manager.__dict__["_geometry_columns"] = {
+            "geometry": GeometryColumnInfo(
+                encoding="objects", external_type="geometry"
+            )
+        }
+        return manager
+
+    def test_semantic_type_overrides_dtype(self) -> None:
+        manager = self._manager()
+
+        assert manager.get_field_type("geometry") == ("geometry", "geometry")
+        assert manager.get_field_type("name")[0] == "string"
+
+    def test_search_skips_geometry(self) -> None:
+        manager = self._manager()
+
+        assert manager.search("POINT").get_num_rows() == 0
+
+    def test_top_k_returns_empty(self) -> None:
+        manager = self._manager()
+
+        assert manager.calculate_top_k_rows("geometry", 10) == []
+
+    def test_unique_values_returns_empty(self) -> None:
+        manager = self._manager()
+
+        assert manager.get_unique_column_values("geometry") == []
+
+    def test_stats_counts_only(self) -> None:
+        manager = self._manager()
+
+        stats = manager.get_stats("geometry")
+        assert stats.total == 2
+        assert stats.nulls == 1
+        assert stats.unique is None
+        assert stats.min is None
