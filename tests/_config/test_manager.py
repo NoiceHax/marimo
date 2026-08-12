@@ -13,6 +13,7 @@ from marimo._config.manager import (
     EnvConfigManager,
     MarimoConfigManager,
     MarimoConfigReaderWithOverrides,
+    ProjectConfigManager,
     ScriptConfigManager,
     SecurityConfigManager,
     UserConfigManager,
@@ -339,21 +340,6 @@ def test_with_multiple_overrides() -> None:
     assert manager.get_config()["package_management"]["manager"] == "pixi"
 
 
-def test_project_config_default_dotenv(tmp_path: Path) -> None:
-    # Even if the pyproject.toml does not have a marimo section,
-    # at runtime the dotenv default should be injected.
-    pyproject_path = tmp_path / "pyproject.toml"
-    pyproject_content = ""
-    pyproject_path.write_text(textwrap.dedent(pyproject_content))
-
-    notebook_path = tmp_path / "notebook.py"
-    notebook_content = "import marimo as mo"
-    notebook_path.write_text(textwrap.dedent(notebook_content))
-    manager = get_default_config_manager(current_path=str(notebook_path))
-    config = manager.get_config(hide_secrets=False)
-    assert config["runtime"]["dotenv"] == [str(tmp_path / ".env")]
-
-
 def test_project_config_manager_with_script_metadata(tmp_path: Path) -> None:
     # Create a notebook file with script metadata
     notebook_path = tmp_path / "notebook.py"
@@ -386,16 +372,15 @@ def test_project_config_manager_with_script_metadata(tmp_path: Path) -> None:
     manager = get_default_config_manager(current_path=str(notebook_path))
     config = manager.get_config_overrides(hide_secrets=False)
 
-    # Verify that script metadata takes precedence over pyproject.toml
+    # Verify that script metadata takes precedence over pyproject.toml.
+    # NB. no `runtime.dotenv` — the untrusted project and script layers
+    # contribute nothing there, so the section is absent, not injected.
     assert config == {
         "formatting": {"line_length": 79},  # From script metadata
         "save": {
             "autosave_delay": 1000,  # From script metadata
             "format_on_save": True,  # From pyproject.toml
             "autosave": "after_delay",  # From pyproject.toml
-        },
-        "runtime": {
-            "dotenv": [str(tmp_path / ".env")],
         },
     }
 
@@ -614,80 +599,6 @@ def test_marimo_config_reader_properties() -> None:
     assert manager.package_manager is not None
 
 
-def test_project_config_manager_resolve_paths(tmp_path: Path) -> None:
-    # Create a pyproject.toml with pythonpath and dotenv settings
-    pyproject_path = tmp_path / "pyproject.toml"
-    pyproject_content = """
-    [tool.marimo.runtime]
-    pythonpath = ["src", "lib"]
-    dotenv = [".env", "config/.env"]
-    """
-    pyproject_path.write_text(textwrap.dedent(pyproject_content))
-
-    # Create the directory structure
-    (tmp_path / "src").mkdir()
-    (tmp_path / "lib").mkdir()
-    (tmp_path / "config").mkdir()
-    (tmp_path / ".env").touch()
-    (tmp_path / "config" / ".env").touch()
-
-    # Initialize ProjectConfigManager
-    manager = get_default_config_manager(current_path=str(pyproject_path))
-    config = manager.get_config(hide_secrets=False)
-
-    # Verify pythonpath resolution
-    expected_pythonpath = [
-        str((tmp_path / "src").absolute()),
-        str((tmp_path / "lib").absolute()),
-    ]
-    assert config["runtime"]["pythonpath"] == expected_pythonpath
-
-    # Verify dotenv resolution
-    expected_dotenv = [
-        str((tmp_path / ".env").absolute()),
-        str((tmp_path / "config" / ".env").absolute()),
-    ]
-    assert config["runtime"]["dotenv"] == expected_dotenv
-
-
-def test_project_config_manager_resolve_invalid_paths(tmp_path: Path) -> None:
-    # Create a pyproject.toml with invalid path types
-    pyproject_path = tmp_path / "pyproject.toml"
-    pyproject_content = """
-    [tool.marimo.runtime]
-    pythonpath = "not_a_list"
-    dotenv = 123
-    """
-    pyproject_path.write_text(textwrap.dedent(pyproject_content))
-
-    # Initialize ProjectConfigManager
-    manager = get_default_config_manager(current_path=str(pyproject_path))
-    config = manager.get_config(hide_secrets=False)
-
-    # Verify invalid paths are not modified
-    assert config["runtime"]["pythonpath"] == "not_a_list"
-    assert config["runtime"]["dotenv"] == 123
-
-
-def test_project_config_manager_resolve_missing_paths(tmp_path: Path) -> None:
-    # Create a pyproject.toml without path settings
-    pyproject_path = tmp_path / "pyproject.toml"
-    pyproject_content = """
-    [tool.marimo.runtime]
-    other_setting = "value"
-    """
-    pyproject_path.write_text(textwrap.dedent(pyproject_content))
-
-    # Initialize ProjectConfigManager
-    manager = get_default_config_manager(current_path=str(pyproject_path))
-    config = manager.get_config(hide_secrets=False)
-
-    # Verify missing paths don't cause issues
-    assert config["runtime"].get("pythonpath", []) == []
-    assert config["runtime"]["dotenv"] == [str(tmp_path / ".env")]
-    assert config["runtime"]["other_setting"] == "value"
-
-
 def test_project_config_manager_resolve_custom_css(tmp_path: Path) -> None:
     # Create a pyproject.toml with custom_css paths
     pyproject_path = tmp_path / "pyproject.toml"
@@ -857,3 +768,291 @@ def test_restrict_sharing_disabled_keeps_user_config(
     assert manager.get_config_overrides(hide_secrets=False)["sharing"] == {
         "wasm": True
     }
+
+
+def test_project_config_does_not_implicitly_load_dotenv(
+    tmp_path: Path,
+) -> None:
+    """Finding a pyproject.toml must not load the `.env` sitting beside it.
+
+    Loading a `.env` turns repository contents into environment variables
+    before any cell runs, so it takes an explicit opt-in in trusted user
+    config rather than the mere presence of a project file.
+    """
+    pyproject_path = tmp_path / "pyproject.toml"
+    pyproject_content = ""
+    pyproject_path.write_text(textwrap.dedent(pyproject_content))
+    (tmp_path / ".env").write_text("SECRET=leaked\n")
+
+    notebook_path = tmp_path / "notebook.py"
+    notebook_content = "import marimo as mo"
+    notebook_path.write_text(textwrap.dedent(notebook_content))
+    manager = get_default_config_manager(current_path=str(notebook_path))
+    config = manager.get_config(hide_secrets=False)
+    assert config["runtime"].get("dotenv", []) == []
+
+
+def test_project_config_cannot_set_dotenv_or_pythonpath(
+    tmp_path: Path,
+) -> None:
+    """A cloned repo's pyproject.toml cannot choose imports or environment."""
+    pyproject_path = tmp_path / "pyproject.toml"
+    pyproject_content = """
+    [tool.marimo.runtime]
+    dotenv = ["attacker.env"]
+    pythonpath = ["attacker_modules"]
+    on_cell_change = "lazy"
+    """
+    pyproject_path.write_text(textwrap.dedent(pyproject_content))
+
+    notebook_path = tmp_path / "notebook.py"
+    notebook_path.write_text("import marimo as mo")
+    manager = get_default_config_manager(current_path=str(notebook_path))
+    config = manager.get_config(hide_secrets=False)
+
+    assert config["runtime"].get("dotenv", []) == []
+    assert config["runtime"].get("pythonpath", []) == []
+    # Non-provenance runtime settings from the project still apply.
+    assert config["runtime"]["on_cell_change"] == "lazy"
+
+
+def test_script_metadata_cannot_set_dotenv_or_pythonpath(
+    tmp_path: Path,
+) -> None:
+    """A shared notebook's PEP 723 header is untrusted origin too."""
+    notebook_path = tmp_path / "notebook.py"
+    notebook_content = """
+    # /// script
+    # [tool.marimo.runtime]
+    # dotenv = ["attacker.env"]
+    # pythonpath = ["attacker_modules"]
+    # on_cell_change = "lazy"
+    # ///
+
+    import marimo as mo
+    """
+    notebook_path.write_text(textwrap.dedent(notebook_content))
+
+    config = ScriptConfigManager(str(notebook_path)).get_config()
+
+    runtime = config.get("runtime", {})
+    assert "dotenv" not in runtime
+    assert "pythonpath" not in runtime
+    assert runtime["on_cell_change"] == "lazy"
+
+
+def test_workspace_marimo_toml_cannot_set_runtime_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `.marimo.toml` found by walking up from the cwd is project-origin.
+
+    It loads as the user layer, so it is the one untrusted layer that reaches
+    `UserConfigManager`; it must still not choose imports or environment.
+    """
+    cfg = tmp_path / ".marimo.toml"
+    cfg.write_text(
+        textwrap.dedent(
+            """
+            [runtime]
+            pythonpath = ["attacker_modules"]
+            dotenv = ["attacker.env"]
+            on_cell_change = "lazy"
+            """
+        )
+    )
+    monkeypatch.setattr(
+        "marimo._config.manager.get_or_create_user_config_path",
+        lambda: str(cfg),
+    )
+    monkeypatch.setattr(
+        "marimo._config.manager.is_trusted_user_config_path",
+        lambda _path: False,
+    )
+
+    config = UserConfigManager().get_config(hide_secrets=False)
+
+    assert config["runtime"].get("pythonpath", []) == []
+    assert config["runtime"].get("dotenv", []) == []
+    assert config["runtime"]["on_cell_change"] == "lazy"
+
+
+def test_project_config_manager_resolve_missing_paths(tmp_path: Path) -> None:
+    # Create a pyproject.toml without path settings
+    pyproject_path = tmp_path / "pyproject.toml"
+    pyproject_content = """
+    [tool.marimo.runtime]
+    other_setting = "value"
+    """
+    pyproject_path.write_text(textwrap.dedent(pyproject_content))
+
+    # Initialize ProjectConfigManager
+    manager = get_default_config_manager(current_path=str(pyproject_path))
+    config = manager.get_config(hide_secrets=False)
+
+    # Verify missing paths don't cause issues
+    assert config["runtime"].get("pythonpath", []) == []
+    assert config["runtime"].get("dotenv", []) == []
+    assert config["runtime"]["other_setting"] == "value"
+
+
+# A syntactically valid fingerprint; never used to verify anything.
+_FAKE_FP = "SHA256:kV9x2cAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+
+def test_script_config_manager_strips_signing_and_verification(
+    tmp_path: Path,
+) -> None:
+    """A notebook header cannot anchor trust or turn verification off."""
+    notebook_path = tmp_path / "notebook.py"
+    notebook_content = f"""
+    # /// script
+    # [tool.marimo.signing]
+    # private_key_path = "/tmp/evil.pem"
+    # [tool.marimo.signing.trusted_signers]
+    # "{_FAKE_FP}" = "attacker"
+    # [tool.marimo.cache]
+    # verification = "off"
+    # ///
+    import marimo as mo
+    """
+    notebook_path.write_text(textwrap.dedent(notebook_content))
+
+    config = ScriptConfigManager(str(notebook_path)).get_config()
+
+    assert "signing" not in config
+    # NB. the script allowlist (ALLOWED_SCRIPT_CONFIG_TOP_KEYS) drops the whole
+    # `cache` section from script metadata, so a notebook header cannot set a
+    # store either — stricter than the project layer below.
+    assert "cache" not in config
+
+
+def test_project_config_manager_strips_signing_and_verification(
+    tmp_path: Path,
+) -> None:
+    """A cloned repo's pyproject.toml is untrusted origin for signing config."""
+    pyproject_path = tmp_path / "pyproject.toml"
+    pyproject_content = f"""
+    [tool.marimo.signing]
+    private_key_path = "/tmp/evil.pem"
+
+    [tool.marimo.signing.trusted_signers]
+    "{_FAKE_FP}" = "attacker"
+
+    [tool.marimo.cache]
+    verification = "off"
+
+    [tool.marimo.cache.store]
+    type = "file"
+    """
+    pyproject_path.write_text(textwrap.dedent(pyproject_content))
+
+    config = ProjectConfigManager(str(pyproject_path)).get_config()
+
+    assert "signing" not in config
+    # `cache.store` is not a trust anchor, so a project may still choose one;
+    # the verifying loaders check its bytes before unpickling.
+    assert config.get("cache") == {"store": {"type": "file"}}
+
+
+def test_effective_config_anchors_trust_in_user_layer_only(
+    tmp_path: Path,
+) -> None:
+    """Regression: project trust never reaches the merged effective config."""
+    pyproject_path = tmp_path / "pyproject.toml"
+    project_fp = "SHA256:PROJECTPROJECTPROJECTPROJECTPROJECTPROJECT0"
+    user_fp = "SHA256:USERUSERUSERUSERUSERUSERUSERUSERUSERUSERUS0"
+    pyproject_path.write_text(
+        textwrap.dedent(
+            f"""
+            [tool.marimo.signing.trusted_signers]
+            "{project_fp}" = "attacker"
+            """
+        )
+    )
+
+    manager = MarimoConfigManager(
+        UserConfigManager(),
+        ProjectConfigManager(str(pyproject_path)),
+    ).with_overrides({"signing": {"trusted_signers": {user_fp: "me"}}})
+
+    signing = manager.get_config(hide_secrets=False).get("signing", {})
+    trusted = signing.get("trusted_signers", {})
+    assert project_fp not in trusted
+    assert user_fp in trusted
+
+
+def test_workspace_marimo_toml_strips_signing_and_verification(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `.marimo.toml` found by walking up from the cwd is project-origin.
+
+    It loads as the user layer, so it is the one untrusted layer that reaches
+    `UserConfigManager`; it must still not anchor trust.
+    """
+    cfg = tmp_path / ".marimo.toml"
+    cfg.write_text(
+        textwrap.dedent(
+            f"""
+            [signing]
+            private_key_path = "/tmp/evil.pem"
+
+            [signing.trusted_signers]
+            "{_FAKE_FP}" = "attacker"
+
+            [cache]
+            verification = "off"
+
+            [cache.store]
+            type = "file"
+            """
+        )
+    )
+    monkeypatch.setattr(
+        "marimo._config.manager.get_or_create_user_config_path",
+        lambda: str(cfg),
+    )
+    monkeypatch.setattr(
+        "marimo._config.manager.is_trusted_user_config_path",
+        lambda _path: False,
+    )
+
+    config = UserConfigManager().get_config(hide_secrets=False)
+
+    assert "signing" not in config
+    assert config.get("cache", {}).get("verification") is None
+    # The store goes too, unlike the project and script layers. A store set
+    # here would load as the user layer, so `cache_store_is_untrusted` could
+    # not tell it apart from one the operator chose, and the unsigned pickle
+    # loader would deserialize its bytes.
+    assert config.get("cache", {}).get("store") is None
+
+
+def test_trusted_user_config_location_anchors_trust(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The genuinely user-owned config (XDG / ~/.marimo.toml) may set trust."""
+    cfg = tmp_path / "marimo.toml"
+    cfg.write_text(
+        textwrap.dedent(
+            f"""
+            [signing.trusted_signers]
+            "{_FAKE_FP}" = "me"
+
+            [cache]
+            verification = "strict"
+            """
+        )
+    )
+    monkeypatch.setattr(
+        "marimo._config.manager.get_or_create_user_config_path",
+        lambda: str(cfg),
+    )
+    monkeypatch.setattr(
+        "marimo._config.manager.is_trusted_user_config_path",
+        lambda _path: True,
+    )
+
+    config = UserConfigManager().get_config(hide_secrets=False)
+
+    assert config["signing"]["trusted_signers"] == {_FAKE_FP: "me"}
+    assert config["cache"]["verification"] == "strict"

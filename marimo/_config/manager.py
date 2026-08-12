@@ -16,7 +16,6 @@ from marimo._config.config import (
     LanguageServersConfig,
     MarimoConfig,
     PartialMarimoConfig,
-    RuntimeConfig,
     SharingConfig,
     SqlOutputType,
     Theme,
@@ -33,6 +32,7 @@ from marimo._config.reader import (
     read_marimo_config,
     read_pyproject_marimo_config,
     sanitize_pyproject_dict,
+    strip_untrusted_config,
 )
 from marimo._config.secrets import (
     mask_secrets,
@@ -42,6 +42,7 @@ from marimo._config.secrets import (
 from marimo._config.settings import GLOBAL_SETTINGS
 from marimo._config.utils import (
     get_or_create_user_config_path,
+    is_trusted_user_config_path,
 )
 from marimo._utils.env import env_to_value
 
@@ -220,14 +221,12 @@ class ProjectConfigManager(PartialMarimoConfigReader):
                 return {}
             project_config = read_pyproject_marimo_config(self.pyproject_path)
             if project_config is None:
-                # Some project configuration defaults (dotenv in particular)
-                # are resolved at runtime, even in the absence of marimo
-                # section in the pyproject.toml.
-                project_config = cast(PartialMarimoConfig, {})
-            project_config = self._resolve_pythonpath(project_config)
-            project_config = self._resolve_dotenv(project_config)
+                return {}
             project_config = self._resolve_custom_css(project_config)
             project_config = self._resolve_vimrc(project_config)
+            # A cloned repo's pyproject.toml is untrusted origin; it cannot
+            # anchor cache-signing trust.
+            project_config = strip_untrusted_config(project_config)
         except Exception as e:
             LOGGER.warning("Failed to read project config: %s", e)
             return {}
@@ -235,53 +234,6 @@ class ProjectConfigManager(PartialMarimoConfigReader):
         if hide_secrets:
             return mask_secrets_partial(project_config)
         return project_config
-
-    def _resolve_pythonpath(
-        self, config: PartialMarimoConfig
-    ) -> PartialMarimoConfig:
-        if self.pyproject_path is None:
-            return config
-
-        if "runtime" not in config:
-            return config
-
-        if "pythonpath" not in config["runtime"]:
-            return config
-
-        pythonpath = config["runtime"]["pythonpath"]
-
-        if not isinstance(pythonpath, list):
-            return config
-
-        resolved_pythonpath = [
-            str((self.pyproject_path.parent / path).absolute())
-            for path in pythonpath
-        ]
-        return {
-            **config,
-            "runtime": {
-                **config["runtime"],
-                "pythonpath": resolved_pythonpath,
-            },
-        }
-
-    def _resolve_dotenv(
-        self, config: PartialMarimoConfig
-    ) -> PartialMarimoConfig:
-        if self.pyproject_path is None:
-            return config
-
-        runtime = config.get("runtime", cast(RuntimeConfig, {}))
-        dotenv = runtime.get("dotenv", [".env"])
-
-        if not isinstance(dotenv, list):
-            return config
-
-        resolved_dotenv = [
-            str((self.pyproject_path.parent / path).absolute())
-            for path in dotenv
-        ]
-        return {**config, "runtime": {**runtime, "dotenv": resolved_dotenv}}
 
     def _resolve_custom_css(
         self, config: PartialMarimoConfig
@@ -455,6 +407,9 @@ class ScriptConfigManager(PartialMarimoConfigReader):
             )
             if marimo_config is None:
                 return {}
+            # PEP 723 script metadata is untrusted origin; it cannot anchor
+            # cache-signing trust.
+            marimo_config = strip_untrusted_config(marimo_config)
 
         except Exception as e:
             LOGGER.warning("Failed to read script config: %s", e)
@@ -528,6 +483,11 @@ class UserConfigManager(MarimoConfigReader):
                 LOGGER.error("Failed to read user config at %s", path)
                 LOGGER.error(str(e))
                 return DEFAULT_CONFIG
+            if not is_trusted_user_config_path(path):
+                # A `.marimo.toml` discovered by walking up from the cwd is
+                # project-origin, not user-owned; strip its security-sensitive
+                # keys like any other untrusted layer.
+                strip_untrusted_config(user_config, is_user_layer=True)
             return merge_default_config(user_config)
         else:
             LOGGER.debug("No config found; loading default settings.")
