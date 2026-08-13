@@ -1,6 +1,6 @@
 /* Copyright 2026 Marimo. All rights reserved. */
 
-import { act, render } from "@testing-library/react";
+import { act, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { z } from "zod";
 import { initialModeAtom } from "@/core/mode";
@@ -355,6 +355,168 @@ describe("NumberPlugin", () => {
 
     expect(input).toBeTruthy();
     expect(input.value).toBe("5");
+  });
+
+  describe("step is an increment, not a constraint", () => {
+    const renderNumber = (
+      data: { start: number; stop: number; step: number },
+      value: number | null,
+      setValue = vi.fn(),
+    ) => {
+      const plugin = new NumberPlugin();
+      const rendered = render(
+        plugin.render({
+          host: document.createElement("div"),
+          value,
+          setValue,
+          data: {
+            ...data,
+            label: null,
+            debounce: false,
+            fullWidth: false,
+          },
+          functions: {},
+        }),
+      );
+
+      act(() => {
+        vi.advanceTimersByTime(0);
+      });
+
+      return {
+        ...rendered,
+        setValue,
+        input: rendered.getByRole("textbox", {
+          name: "Number input",
+        }) as HTMLInputElement,
+      };
+    };
+
+    it("does not snap the displayed value to the start + step grid", () => {
+      // 2.23 is not reachable from start in whole steps
+      // (1.25557 + 974 * 0.001 = 2.22957), but must still be shown as-is.
+      const { input } = renderNumber(
+        { start: 1.25557, stop: 20, step: 0.001 },
+        2.23,
+      );
+      expect(input.value).toBe("2.23");
+    });
+
+    it("does not round the displayed value to the step's precision", () => {
+      const { input } = renderNumber(
+        { start: 1, stop: 20, step: 0.001 },
+        2.23345,
+      );
+      expect(input.value).toBe("2.23345");
+    });
+
+    it("keeps a typed value that is finer than the step", () => {
+      const { input, setValue } = renderNumber(
+        { start: 1.222, stop: 20, step: 0.01 },
+        2.23345,
+      );
+
+      act(() => {
+        fireEvent.change(input, { target: { value: "2.23111" } });
+        fireEvent.blur(input);
+      });
+
+      expect(setValue).toHaveBeenLastCalledWith(2.23111);
+    });
+
+    it("still clamps a typed value to start and stop", () => {
+      const { input, setValue } = renderNumber(
+        { start: 1, stop: 20, step: 0.01 },
+        2,
+      );
+
+      act(() => {
+        fireEvent.change(input, { target: { value: "42" } });
+        fireEvent.blur(input);
+      });
+
+      expect(setValue).toHaveBeenLastCalledWith(20);
+    });
+
+    it("steps from the current value with the stepper buttons", () => {
+      const { getByRole, setValue } = renderNumber(
+        { start: 1.222, stop: 20, step: 0.01 },
+        2.23345,
+      );
+
+      act(() => {
+        fireEvent.click(getByRole("button", { name: "Increase Number input" }));
+      });
+      expect(setValue).toHaveBeenLastCalledWith(2.24345);
+
+      act(() => {
+        fireEvent.click(getByRole("button", { name: "Decrease Number input" }));
+      });
+      expect(setValue).toHaveBeenLastCalledWith(2.22345);
+    });
+
+    it("steps from the current value with the arrow and page keys", () => {
+      const { input, setValue } = renderNumber(
+        { start: 1, stop: 20, step: 0.001 },
+        2.23345,
+      );
+
+      act(() => {
+        fireEvent.keyDown(input, { key: "ArrowUp" });
+      });
+      expect(setValue).toHaveBeenLastCalledWith(2.23445);
+
+      act(() => {
+        fireEvent.keyDown(input, { key: "ArrowDown" });
+      });
+      expect(setValue).toHaveBeenLastCalledWith(2.23245);
+
+      act(() => {
+        fireEvent.keyDown(input, { key: "PageUp" });
+      });
+      expect(setValue).toHaveBeenLastCalledWith(2.23445);
+    });
+
+    it("jumps to start and stop with Home and End", () => {
+      const { input, setValue } = renderNumber(
+        { start: 1.222, stop: 20, step: 0.01 },
+        2.23345,
+      );
+
+      act(() => {
+        fireEvent.keyDown(input, { key: "End" });
+      });
+      expect(setValue).toHaveBeenLastCalledWith(20);
+
+      act(() => {
+        fireEvent.keyDown(input, { key: "Home" });
+      });
+      expect(setValue).toHaveBeenLastCalledWith(1.222);
+    });
+
+    it("clamps stepping to start and stop", () => {
+      const { getByRole, setValue } = renderNumber(
+        { start: 1, stop: 2.235, step: 0.01 },
+        2.23345,
+      );
+
+      act(() => {
+        fireEvent.click(getByRole("button", { name: "Increase Number input" }));
+      });
+      expect(setValue).toHaveBeenLastCalledWith(2.235);
+    });
+
+    it("steps from start when the input is empty", () => {
+      const { getByRole, setValue } = renderNumber(
+        { start: 1.222, stop: 20, step: 0.01 },
+        null,
+      );
+
+      act(() => {
+        fireEvent.click(getByRole("button", { name: "Increase Number input" }));
+      });
+      expect(setValue).toHaveBeenLastCalledWith(1.222);
+    });
   });
 
   it("renders with custom label", () => {

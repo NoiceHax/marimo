@@ -68,7 +68,10 @@ class number(UIElement[Numeric | None, Numeric | None]):
     Args:
         start (Optional[float]): The minimum value of the interval. Defaults to None.
         stop (Optional[float]): The maximum value of the interval. Defaults to None.
-        step (Optional[float]): The number increment. Defaults to None.
+        step (Optional[float]): The amount the value changes when using the
+            stepper buttons or arrow keys. It does not restrict which values
+            can be entered: any number in `[start, stop]` is accepted.
+            Defaults to None.
         value (Optional[float]): The default value. Defaults to None.
         debounce (bool): Whether to debounce (rate-limit) value updates from the frontend. Defaults to False.
         label (str): Markdown label for the element. Defaults to an empty string.

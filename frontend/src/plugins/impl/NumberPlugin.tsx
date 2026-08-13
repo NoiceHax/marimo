@@ -4,6 +4,8 @@ import { z } from "zod";
 import { NumberField } from "@/components/ui/number-field";
 import { useDebounceControlledState } from "@/hooks/useDebounce";
 import { cn } from "@/utils/cn";
+import { clamp } from "@/utils/math";
+import { countFractionDigits, roundToFractionDigits } from "@/utils/numbers";
 import type { IPlugin, IPluginProps, Setter } from "../types";
 import { Labeled } from "./common/labeled";
 
@@ -69,6 +71,34 @@ const NumberComponent = (props: NumberComponentProps): JSX.Element => {
     onChange(withoutNaN(newValue));
   };
 
+  // `step` is only an increment: it moves the value by `step` but never
+  // constrains what the user may type.
+  // https://github.com/marimo-team/marimo/issues/9106
+  const handleStep = (direction: 1 | -1) => {
+    const increment = props.step ?? 1;
+    let next: number;
+    if (value == null) {
+      // An empty input starts at the bound we are stepping towards, matching
+      // react-aria's own stepper.
+      next = (direction === 1 ? props.start : props.stop) ?? 0;
+    } else {
+      // Keep the result on a clean decimal grid; 2.23345 + 0.01 would
+      // otherwise land on 2.2434500000000003.
+      const digits = Math.max(
+        countFractionDigits(value),
+        countFractionDigits(increment),
+      );
+      next = roundToFractionDigits(value + direction * increment, digits);
+    }
+    handleChange(
+      clamp(
+        next,
+        props.start ?? Number.NEGATIVE_INFINITY,
+        props.stop ?? Number.POSITIVE_INFINITY,
+      ),
+    );
+  };
+
   return (
     <Labeled label={props.label} id={id} fullWidth={props.fullWidth}>
       <NumberField
@@ -80,8 +110,8 @@ const NumberComponent = (props: NumberComponentProps): JSX.Element => {
         // and can lead to leaving the old value in forms (https://github.com/marimo-team/marimo/issues/7352)
         // We out NaNs later
         value={value ?? Number.NaN}
-        step={props.step}
         onChange={handleChange}
+        onStep={handleStep}
         id={id}
         aria-label={props.label || "Number input"}
         isDisabled={props.disabled}
