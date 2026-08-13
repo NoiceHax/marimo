@@ -179,6 +179,16 @@ class TestGeoPandasManager:
         rows = json.loads(manager.to_json_str())
         assert rows[1]["geometry"] is None
 
+    @pytest.mark.requires("pyarrow")
+    def test_arrow_cells_render_wkt_and_preserve_null(self) -> None:
+        from pyarrow import ipc
+
+        manager = get_table_manager(geo.gdf_with_null())
+
+        rows = ipc.open_file(manager.to_arrow_ipc()).read_all().to_pylist()
+        assert rows[0]["geometry"] == "POINT (0 0)"
+        assert rows[1]["geometry"] is None
+
     def test_unique_values_returns_empty(self) -> None:
         manager = get_table_manager(geo.gdf_point_known_crs())
 
