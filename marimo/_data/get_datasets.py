@@ -195,13 +195,44 @@ def _get_databases_from_duckdb_internal(
         LOGGER.exception("Failed to get tables from DuckDB")
         return []
 
-    if len(tables_result) == 0:
-        return _get_empty_databases(connection, engine_name)
-
     # Group tables by database and schema
     # databases_dict[database][schema] = [table1, table2, ...]
     databases_dict: dict[str, dict[str, list[DataTable]]] = {}
+    _collect_tables(tables_result, databases_dict, connection, engine_name)
 
+    # Databases attached over the quack protocol live on a remote server, so
+    # their tables are invisible to SHOW ALL TABLES. Ask the server instead.
+    for quack_database in _get_quack_database_names(connection):
+        quack_result = execute_duckdb_query(
+            connection,
+            f"SELECT * FROM {_quote_identifier(quack_database)}.query('SHOW ALL TABLES')",
+        )
+        _collect_tables(
+            quack_result,
+            databases_dict,
+            connection,
+            engine_name,
+            # The server reports its own database name; the client can only
+            # address these tables through the local attachment name.
+            database_override=quack_database,
+        )
+
+    return form_databases_from_dict(
+        databases_dict, connection, engine_name, backfill_empty_databases=True
+    )
+
+
+def _collect_tables(
+    tables_result: list[Any],
+    databases_dict: dict[str, dict[str, list[DataTable]]],
+    connection: duckdb.DuckDBPyConnection | None,
+    engine_name: VariableName | None,
+    database_override: str | None = None,
+) -> None:
+    """Group the rows of a `SHOW ALL TABLES` result by database and schema.
+
+    Tables are appended to `databases_dict[database][schema]`.
+    """
     # Bug with Iceberg catalog tables where there is a single column named "__"
     # https://github.com/marimo-team/marimo/issues/6688
     CATALOG_TABLE_COLUMN_NAME = "__"
@@ -216,6 +247,9 @@ def _get_databases_from_duckdb_internal(
     ) in tables_result:
         if name in _SKIP_TABLES:
             continue
+
+        if database_override is not None:
+            database = database_override
 
         assert len(column_names) == len(column_types)
         assert isinstance(column_names, list)
@@ -261,9 +295,23 @@ def _get_databases_from_duckdb_internal(
 
         databases_dict[database][schema].append(table)
 
-    return form_databases_from_dict(
-        databases_dict, connection, engine_name, backfill_empty_databases=True
-    )
+
+def _get_quack_database_names(
+    connection: duckdb.DuckDBPyConnection | None,
+) -> list[str]:
+    """Get the names of databases attached over the quack protocol.
+
+    https://duckdb.org/2026/05/12/quack-remote-protocol
+    """
+    query = """
+    SELECT database_name
+    FROM duckdb_databases()
+    WHERE type = 'quack' AND internal = false
+    """
+    return [
+        database_name
+        for (database_name,) in execute_duckdb_query(connection, query)
+    ]
 
 
 def get_table_columns(

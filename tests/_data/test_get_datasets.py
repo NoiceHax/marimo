@@ -9,7 +9,9 @@ from inline_snapshot import snapshot
 
 from marimo._data.get_datasets import (
     _db_type_to_data_type,
+    _get_quack_database_names,
     _quote_identifier,
+    execute_duckdb_query,
     form_databases_from_dict,
     get_databases_from_duckdb,
     get_datasets_from_variables,
@@ -493,6 +495,94 @@ def test_get_databases_with_connection() -> None:
     )
 
     connection.execute(cleanup_query)
+
+
+@pytest.mark.requires("duckdb")
+def test_get_quack_database_names_without_quack() -> None:
+    """The quack lookup is a valid no-op when nothing is attached over quack."""
+    import duckdb
+
+    connection = duckdb.connect(":memory:")
+
+    with patch("marimo._data.get_datasets.LOGGER") as mock_logger:
+        assert _get_quack_database_names(connection) == []
+
+    mock_logger.exception.assert_not_called()
+
+
+@pytest.mark.requires("duckdb")
+def test_get_databases_with_quack_attachment() -> None:
+    """Databases attached over the quack protocol surface their tables.
+
+    Quack catalogs live on a remote server and are invisible to
+    `SHOW ALL TABLES`, so they have to be queried on the server instead.
+    """
+    import duckdb
+
+    connection = duckdb.connect(":memory:")
+
+    # The server reports its own database name ("quack"), which has to be
+    # remapped to the local attachment name ("remote").
+    remote_tables = [("quack", "main", "hello", ["s"], ["VARCHAR"], False)]
+    real_execute = execute_duckdb_query
+
+    def fake_execute(conn: Any, query: str) -> list[Any]:
+        if "SHOW ALL TABLES" in query:
+            return remote_tables
+        return real_execute(conn, query)
+
+    with (
+        patch(
+            "marimo._data.get_datasets._get_quack_database_names",
+            return_value=["remote"],
+        ),
+        patch(
+            "marimo._data.get_datasets.execute_duckdb_query",
+            side_effect=fake_execute,
+        ),
+    ):
+        databases = get_databases_from_duckdb(
+            connection=connection, engine_name=VariableName("engine")
+        )
+
+    assert databases == [
+        Database(
+            name="remote",
+            dialect="duckdb",
+            schemas=[
+                Schema(
+                    name="main",
+                    tables=[
+                        DataTable(
+                            name="hello",
+                            source_type="connection",
+                            source="remote",
+                            num_rows=None,
+                            num_columns=1,
+                            variable_name=None,
+                            columns=[
+                                DataTableColumn(
+                                    name="s",
+                                    type="string",
+                                    external_type="VARCHAR",
+                                    sample_values=[],
+                                )
+                            ],
+                            engine=VariableName("engine"),
+                        )
+                    ],
+                )
+            ],
+            engine=VariableName("engine"),
+        ),
+        # Backfilled: the local in-memory database has no tables
+        Database(
+            name="memory",
+            dialect="duckdb",
+            schemas=[],
+            engine=VariableName("engine"),
+        ),
+    ]
 
 
 @pytest.mark.parametrize(
