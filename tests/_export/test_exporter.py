@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 import json
 import pathlib
 import sys
@@ -50,6 +51,7 @@ from marimo._messaging.notification import (
     ModelLifecycleNotification,
     ModelOpen,
 )
+from marimo._messaging.tracebacks import is_code_highlighting
 from marimo._schemas.export import (
     ExportAsHTMLRequest,
 )
@@ -342,6 +344,44 @@ async def test_run_notebook_with_stack_trace() -> None:
         "run_notebook_with_stack_trace.txt",
         delete_lines_with_files(messages),
     )
+
+
+@pytest.mark.flaky(reruns=3)
+async def test_run_notebook_writes_plain_text_traceback_to_stderr() -> None:
+    """Failing cells report a plain-text stack trace, not highlighted HTML."""
+    internal_app = _load_fixture_app("error_value_with_stdout")
+    file_manager = AppFileManager.from_app(internal_app)
+
+    stderr = io.StringIO()
+    _, did_error = await run_notebook(
+        RunNotebookRequest(
+            file_manager=file_manager,
+            options=NotebookExecutionOptions(
+                cli_args={}, argv=None, stderr=stderr
+            ),
+        )
+    )
+    assert did_error is True
+
+    def _assert_contents() -> None:
+        captured = stderr.getvalue()
+        assert "Traceback (most recent call last):" in captured
+        assert "ValueError: test error" in captured
+        # The frontend's syntax highlighting must not leak into the terminal.
+        assert not is_code_highlighting(captured)
+
+    # Console output notifications arrive asynchronously after CompletedRun.
+    n_tries = 0
+    limit = 50
+    while n_tries <= limit:
+        try:
+            _assert_contents()
+            break
+        except Exception:
+            n_tries += 1
+            await asyncio.sleep(0.1)
+    if n_tries > limit:
+        _assert_contents()
 
 
 @pytest.mark.flaky(reruns=3)

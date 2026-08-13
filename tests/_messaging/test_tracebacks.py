@@ -11,6 +11,7 @@ from marimo._messaging.tracebacks import (
     _highlight_traceback,
     format_exception_message,
     is_code_highlighting,
+    strip_html_from_traceback,
     write_traceback,
 )
 from marimo._messaging.types import Stderr
@@ -65,6 +66,27 @@ class TestTracebacks:
 
             # Should call write with the original traceback
             mock_stderr.write.assert_called_once_with(traceback)
+
+    def test_strip_html_from_traceback_round_trips(self) -> None:
+        # Highlighting is lossless: stripping it recovers the original text,
+        # which is what terminal consumers (e.g. `marimo export`) print.
+        traceback = (
+            "Traceback (most recent call last):\n"
+            '  File "<stdin>", line 1, in <module>\n'
+            '    raise ValueError("bad & <wrong>")\n'
+            "ValueError: bad & <wrong>\n"
+        )
+
+        stripped = strip_html_from_traceback(_highlight_traceback(traceback))
+
+        # pygments appends a trailing newline of its own.
+        assert stripped.rstrip("\n") == traceback.rstrip("\n")
+        assert is_code_highlighting(stripped) is False
+
+    def test_strip_html_from_traceback_on_plain_text(self) -> None:
+        # Plain text passes through untouched.
+        traceback = "ValueError: invalid value\n"
+        assert strip_html_from_traceback(traceback) == traceback
 
     def test_is_code_highlighting(self) -> None:
         # Test is_code_highlighting function

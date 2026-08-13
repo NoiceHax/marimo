@@ -7,7 +7,6 @@ import base64
 import io
 import json
 import re
-from html.parser import HTMLParser
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from marimo._ast.cell import Cell, CellConfig
@@ -21,6 +20,7 @@ from marimo._messaging.errors import (
     MarimoExceptionRaisedError,
 )
 from marimo._messaging.mimetypes import METADATA_KEY
+from marimo._messaging.tracebacks import strip_html_from_traceback
 from marimo._runtime import dataflow
 
 if TYPE_CHECKING:
@@ -246,20 +246,6 @@ def _is_marimo_component(html_content: Any) -> bool:
     return "<marimo-" in html_content
 
 
-class _HTMLTextExtractor(HTMLParser):
-    """Extract plain text from HTML."""
-
-    def __init__(self) -> None:
-        super().__init__()
-        self.text_parts: list[str] = []
-
-    def handle_data(self, data: str) -> None:
-        self.text_parts.append(data)
-
-    def get_text(self) -> str:
-        return "".join(self.text_parts)
-
-
 def _strip_html_from_traceback(html_traceback: str) -> list[str]:
     """Convert HTML-formatted traceback to plain text lines.
 
@@ -268,9 +254,7 @@ def _strip_html_from_traceback(html_traceback: str) -> list[str]:
     set anonymous source since exports are done in the kernel, so we strip
     the paths here instead.
     """
-    parser = _HTMLTextExtractor()
-    parser.feed(html_traceback)
-    text = parser.get_text()
+    text = strip_html_from_traceback(html_traceback)
 
     # Strip temp file paths like /tmp/marimo_12345/__marimo__cell_Hbol_.py
     # Replace with empty string to get cleaner tracebacks

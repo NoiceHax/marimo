@@ -52,6 +52,7 @@ from marimo._messaging.notification import (
     CompletedRunNotification,
 )
 from marimo._messaging.serde import deserialize_kernel_message
+from marimo._messaging.tracebacks import strip_html_from_traceback
 from marimo._messaging.types import KernelMessage
 from marimo._output.hypertext import patch_html_for_non_interactive_output
 from marimo._runtime.commands import AppMetadata
@@ -591,6 +592,15 @@ async def run_notebook(
                             mimetype = line.mimetype
                             if mimetype == "text/plain":
                                 stderr.write(str(line.data))
+                            elif (
+                                mimetype == "application/vnd.marimo+traceback"
+                            ):
+                                # The kernel highlights tracebacks as HTML for
+                                # the frontend; exports are consumed from a
+                                # terminal, so write the plain text back out.
+                                stderr.write(
+                                    strip_html_from_traceback(str(line.data))
+                                )
                     except Exception:
                         LOGGER.warning("Error printing console output")
 

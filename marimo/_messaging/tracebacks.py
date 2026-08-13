@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import sys
 import traceback as tb
+from html.parser import HTMLParser
 
 from marimo._messaging.cell_output import CellChannel, CellOutput
 from marimo._messaging.context import is_code_mode_request
@@ -26,6 +27,31 @@ def _highlight_traceback(traceback: str) -> str:
 
     body = highlight(traceback, PythonTracebackLexer(), formatter)
     return f'<span class="codehilite">{body}</span>'
+
+
+class _HTMLTextExtractor(HTMLParser):
+    """Extract plain text from HTML."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.text_parts: list[str] = []
+
+    def handle_data(self, data: str) -> None:
+        self.text_parts.append(data)
+
+    def get_text(self) -> str:
+        return "".join(self.text_parts)
+
+
+def strip_html_from_traceback(html_traceback: str) -> str:
+    """Recover the plain-text traceback from a highlighted one.
+
+    The inverse of `_highlight_traceback`, for consumers that render to a
+    terminal or a file instead of the frontend.
+    """
+    parser = _HTMLTextExtractor()
+    parser.feed(html_traceback)
+    return parser.get_text()
 
 
 def _show_tracebacks_enabled() -> bool:
